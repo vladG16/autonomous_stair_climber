@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'person_follower = cart_follower.person_follower:main',
+            'motor_bridge = cart_follower.motor_bridge:main',
         ],
     },
 )
