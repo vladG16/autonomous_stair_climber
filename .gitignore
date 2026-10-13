@@ -1,0 +1,12 @@
+build/
+install/
+log/
+__pycache__/
+*.pyc
+runs/
+models/*
+!models/*.py
+vest_data/
+*.mp4
+*.bag
+*.db3
