@@ -2,7 +2,7 @@
  * cart_motor_controller_uno.ino
  * Arduino UNO firmware for the Hudson cart (4-wheel skid-steer, BLDC).
  *
- * Skid-steer: both LEFT drivers share one PWM/DIR/BRAKE signal set, both RIGHT drivers
+ * Skid-steer: both LEFT drivers share one PWM/DIR/BRAKE/EN signal set, both RIGHT drivers
  * share another. Wire each Uno signal pin to the matching input on BOTH drivers of that side.
  * Speed feedback is read from ONE driver per side (front left, front right).
  *
@@ -11,7 +11,8 @@
  *   Uno -> Jetson:  F,<rpmL>,<rpmL>,<rpmR>,<rpmR>,<timedOut>   every 50 ms
  *                   (left/right RPM repeated so the FL,RL,FR,RR order still matches)
  *
- * Safety: 250 ms command watchdog -> ramp to 0 + brake; no direction flip while moving.
+ * Safety: 250 ms command watchdog -> ramp to 0 + brake, then EN dropped (if EN_OFF_WHEN_IDLE);
+ * no direction flip while moving. EN is disabled at boot.
  * The hardware e-stop must still cut motor POWER.
  */
 
@@ -29,6 +30,7 @@ const uint8_t PWM_PIN[NUM_SIDES]   = {9, 10};  // Timer1 pins (safe to speed up;
 const uint8_t DIR_PIN[NUM_SIDES]   = {4, 7};
 const uint8_t BRAKE_PIN[NUM_SIDES] = {8, 12};
 const uint8_t FB_PIN[NUM_SIDES]    = {2, 3};   // the Uno's only two interrupt pins
+const uint8_t EN_PIN[NUM_SIDES]    = {5, 6};   // driver EN input (one per side, shared by both drivers)
 
 // Right-side motors face the opposite way. If a side spins backward, flip its entry.
 const bool INVERT_DIR[NUM_SIDES] = {false, true};
@@ -36,6 +38,12 @@ const bool INVERT_DIR[NUM_SIDES] = {false, true};
 const bool BRAKE_ACTIVE_HIGH = true;   // true: BRAKE pin HIGH = brake engaged
 const bool PWM_INVERTED      = false;  // true if driver treats 0% duty as full speed
 const bool FAST_PWM          = true;   // ~3.9 kHz on pins 9, 10 instead of ~490 Hz. Check driver.
+
+// ---- EN (enable) -- SET AFTER THE BENCH TEST ----
+const bool USE_EN            = true;   // false = never touch EN pins (e.g. if EN is hard-wired)
+const bool EN_ACTIVE_LOW     = true;   // true: EN pin LOW = driver enabled. UNCONFIRMED: bench test!
+const bool EN_OFF_WHEN_IDLE  = true;   // true: drop EN once stopped after a timeout/S/e-stop.
+                                       // false: leave EN on after boot so the brake can hold on a slope.
 
 const bool    USE_ESTOP_INPUT = false; // true once a NC e-stop contact is wired to ESTOP_PIN
 const uint8_t ESTOP_PIN       = A0;    // INPUT_PULLUP, LOW = pressed
@@ -57,6 +65,7 @@ void isrRight() { pulseCount[RIGHT]++; }
 
 int16_t target[NUM_SIDES]  = {0, 0};
 int16_t current[NUM_SIDES] = {0, 0};
+bool    enOn[NUM_SIDES]    = {false, false};
 
 uint32_t lastCmdMs = 0, lastControlMs = 0, lastReportMs = 0;
 bool timedOut = true;
@@ -67,6 +76,12 @@ uint8_t rxLen = 0;
 // --------------------------------------------------------------------------------
 void setBrake(uint8_t i, bool on) {
   digitalWrite(BRAKE_PIN[i], (on == BRAKE_ACTIVE_HIGH) ? HIGH : LOW);
+}
+
+void setEnable(uint8_t i, bool on) {
+  enOn[i] = on;
+  if (!USE_EN) return;
+  digitalWrite(EN_PIN[i], (on == !EN_ACTIVE_LOW) ? HIGH : LOW);
 }
 
 void writeSide(uint8_t i, int16_t cmd) {
@@ -89,6 +104,14 @@ void rampSide(uint8_t i) {
   if (t > c) c = min((int16_t)(c + RAMP_PER_TICK), t);
   else       c = max((int16_t)(c - RAMP_PER_TICK), t);
   current[i] = c;
+
+  // Enable as soon as anything is commanded; drop EN only after fully stopped.
+  if (target[i] != 0 || c != 0) {
+    if (!enOn[i]) setEnable(i, true);
+  } else if (EN_OFF_WHEN_IDLE && timedOut && enOn[i]) {
+    setEnable(i, false);
+  }
+
   writeSide(i, c);
 }
 
@@ -112,6 +135,7 @@ void handleLine(char *line) {
     }
   } else if (line[0] == 'S') {
     stopAll();
+    timedOut = true;   // lets EN drop once the ramp finishes
   }
 }
 
@@ -152,6 +176,14 @@ void report(uint32_t dtMs) {
 
 // --------------------------------------------------------------------------------
 void setup() {
+  // Put EN in its disabled state FIRST, before anything else, so motors stay off.
+  if (USE_EN) {
+    for (uint8_t i = 0; i < NUM_SIDES; i++) {
+      digitalWrite(EN_PIN[i], EN_ACTIVE_LOW ? HIGH : LOW);  // set level before making it an output
+      pinMode(EN_PIN[i], OUTPUT);
+    }
+  }
+
   Serial.begin(BAUD);
 
   for (uint8_t i = 0; i < NUM_SIDES; i++) {
@@ -161,6 +193,7 @@ void setup() {
     pinMode(FB_PIN[i], INPUT_PULLUP);
     setBrake(i, true);
     analogWrite(PWM_PIN[i], PWM_INVERTED ? 255 : 0);
+    enOn[i] = false;
   }
 
   attachInterrupt(digitalPinToInterrupt(FB_PIN[LEFT]), isrLeft, RISING);
