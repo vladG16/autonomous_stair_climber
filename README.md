@@ -47,13 +47,13 @@ Then open **http://192.168.1.145:8080** on a laptop on the same network.
  
 `yolov8n.engine` is not in the repo; it is built per device. To rebuild it on the Jetson:
 ```
-3. Uploading the firmware
+1 Uploading the firmware
 
 Select Tools > Board > Arduino Uno and the correct COM port.
 Keep exactly one .ino in the sketch folder, and name it to match the folder. Extra .ino files in the folder cause redefinition errors, as we saw.
 Upload with motor power off and the wheels lifted.
 
-4. Serial interface
+2 Serial interface
 
 115200 baud, newline-terminated.
 Commands: M,<left>,<right> with values from -1000 to 1000, and S to stop.
